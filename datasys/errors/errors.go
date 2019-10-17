@@ -14,4 +14,5 @@ var (
 var (
 	ErrBucketAlreadyExist = errors.New("bucket already exist")
 	ErrBucketNotFound     = errors.New("bucket not found")
+	ErrBucketNotEmpty     = errors.New("bucket not empty")
 )

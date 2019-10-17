@@ -1,0 +1,342 @@
+package disk
+
+import (
+	"fmt"
+	"os"
+	"path"
+	"sort"
+	"strings"
+
+	xos "github.com/balamurugana/goat/pkg/os"
+)
+
+const (
+	objectID      = "yjf-iAepYVVTZIyO6tXZ1Ghz6iAZOwmVtGqg6y_or2s.default" // Base64 encoded Highway256 hash of string 'object' + ".default"
+	slashObjectID = "Q5C0uOv_8zmsnKK27G_pCfdaDWyJnaWyJFbwKUNEMzM.default" // Base64 encoded Highway256 hash of string '/' + ".default"
+)
+
+func listDir(dir, trimPrefix, startsWith, startAfter string, objectCheck bool, maxKeys *int, more *bool, entries *[]string) error {
+	if *maxKeys <= 0 {
+		return nil
+	}
+
+	isObject := false
+	isSlashObject := false
+
+	subdirs := []string{}
+	picker := func(name string, mode os.FileMode) (stop bool) {
+		switch {
+		case mode.IsDir():
+			if strings.HasPrefix(name, startsWith) {
+				switch strings.Compare(name, startAfter) {
+				case 0:
+					name += "/"
+					fallthrough
+				case 1:
+					subdirs = append(subdirs, name)
+				}
+			}
+		case objectCheck && mode.IsRegular():
+			if !strings.HasSuffix(dir, "/") {
+				if name == objectID {
+					isObject = true
+				}
+			}
+
+			if name == slashObjectID {
+				isSlashObject = true
+			}
+		}
+
+		return false
+	}
+
+	if err := xos.Readdirnames(dir, picker); err != nil {
+		return err
+	}
+
+	if isObject {
+		*entries = append(*entries, strings.TrimPrefix(dir, trimPrefix))
+		*maxKeys--
+
+		if *maxKeys == 0 {
+			if isSlashObject || len(subdirs) > 0 {
+				*more = true
+			}
+
+			return nil
+		}
+	}
+
+	if isSlashObject {
+		if strings.HasSuffix(dir, "/") {
+			*entries = append(*entries, strings.TrimPrefix(dir, trimPrefix))
+		} else {
+			*entries = append(*entries, strings.TrimPrefix(dir, trimPrefix)+"/")
+		}
+		*maxKeys--
+
+		if *maxKeys == 0 {
+			if len(subdirs) > 0 {
+				*more = true
+			}
+
+			return nil
+		}
+	}
+
+	sort.Strings(subdirs)
+
+	for i, name := range subdirs {
+		if *maxKeys == 0 {
+			*more = i != len(subdirs)-1
+			break
+		}
+
+		entry := path.Join(dir, name)
+
+		isObject := false
+		if !strings.HasSuffix(name, "/") {
+			isObject = xos.Exist(path.Join(entry, objectID))
+		}
+		isSlashObject := xos.Exist(path.Join(entry, slashObjectID))
+		isPrefix := false
+
+		if !isSlashObject {
+			picker := func(name string, mode os.FileMode) (stop bool) {
+				isPrefix = mode.IsDir()
+				return isPrefix
+			}
+			if err := xos.Readdirnames(entry, picker); err != nil {
+				return err
+			}
+		}
+
+		if isObject {
+			*entries = append(*entries, strings.TrimPrefix(entry, trimPrefix))
+			*maxKeys--
+			if *maxKeys == 0 {
+				*more = isSlashObject || isPrefix || i != len(subdirs)-1
+				break
+			}
+		}
+
+		if isSlashObject || isPrefix {
+			*entries = append(*entries, strings.TrimPrefix(entry, trimPrefix)+"/")
+			*maxKeys--
+		}
+	}
+
+	return nil
+}
+
+func listRecursive(dir, trimPrefix, startsWith, startAfter string, objectCheck bool, maxKeys *int, more *bool, entries *[]string) error {
+	if *maxKeys <= 0 {
+		return nil
+	}
+
+	isObject := false
+	isSlashObject := false
+	subdirs := []string{}
+	picker := func(name string, mode os.FileMode) (stop bool) {
+		switch {
+		case mode.IsDir():
+			if strings.HasPrefix(name, startsWith) {
+				switch strings.Compare(name, startAfter) {
+				case 0:
+					if !objectCheck {
+						subdirs = append(subdirs, name+"/")
+					}
+				case 1:
+					subdirs = append(subdirs, name)
+				}
+			}
+		case objectCheck && mode.IsRegular():
+			if !strings.HasSuffix(dir, "/") {
+				if name == objectID {
+					isObject = true
+				}
+			}
+
+			if name == slashObjectID {
+				isSlashObject = true
+			}
+		}
+
+		return false
+	}
+
+	if err := xos.Readdirnames(dir, picker); err != nil {
+		return err
+	}
+
+	if isObject {
+		*entries = append(*entries, strings.TrimPrefix(dir, trimPrefix))
+		*maxKeys--
+
+		if *maxKeys == 0 {
+			if isSlashObject || len(subdirs) > 0 {
+				*more = true
+			}
+
+			return nil
+		}
+	}
+
+	if isSlashObject {
+		if strings.HasSuffix(dir, "/") {
+			*entries = append(*entries, strings.TrimPrefix(dir, trimPrefix))
+		} else {
+			*entries = append(*entries, strings.TrimPrefix(dir, trimPrefix)+"/")
+		}
+		*maxKeys--
+
+		if *maxKeys == 0 {
+			if len(subdirs) > 0 {
+				*more = true
+			}
+
+			return nil
+		}
+	}
+
+	sort.Strings(subdirs)
+
+	for i := range subdirs {
+		var err error
+		if strings.HasSuffix(subdirs[i], "/") {
+			err = listRecursive(path.Join(dir, subdirs[i])+"/", trimPrefix, "", "", true, maxKeys, more, entries)
+		} else {
+			err = listRecursive(path.Join(dir, subdirs[i]), trimPrefix, "", "", true, maxKeys, more, entries)
+		}
+		if err != nil {
+			return err
+		}
+
+		if *maxKeys == 0 {
+			if i < len(subdirs)-1 {
+				*more = true
+			}
+
+			break
+		}
+	}
+
+	return nil
+}
+
+func listObjects(rootDir, prefix, startAfter string, isRecursive bool, maxKeys *int, more *bool, entries *[]string) error {
+	switch rootDir {
+	case ".", "", "/":
+		return fmt.Errorf("unsupported root directory %v", rootDir)
+	}
+
+	if strings.HasPrefix(prefix, "/") {
+		return fmt.Errorf("prefix must not start with '/'")
+	}
+
+	if strings.HasPrefix(startAfter, "/") {
+		return fmt.Errorf("startAfter must not start with '/'")
+	}
+
+	dir := rootDir
+	startsWith := ""
+	isPrefixStartAfterSame := false
+	if prefix != "" {
+		dir = prefix
+		if !strings.HasSuffix(prefix, "/") {
+			dir, startsWith = path.Split(prefix)
+		}
+
+		if startAfter != "" {
+			if !strings.HasPrefix(startAfter, prefix) {
+				panic(fmt.Errorf("startAfter %v must has prefix %v", startAfter, prefix))
+			}
+
+			isPrefixStartAfterSame = prefix == startAfter
+
+			if dir != "" {
+				startAfter = strings.Split(startAfter, dir)[1]
+			}
+		}
+
+		dir = path.Join(rootDir, dir)
+	}
+
+	trimPrefix, _ := path.Split(path.Join(rootDir+"/", "a")) // add '/' suffix.
+
+	if !isRecursive {
+		objectCheck := false
+		if strings.HasSuffix(prefix, "/") {
+			dir += "/"
+			objectCheck = true
+		}
+
+		if isPrefixStartAfterSame {
+			objectCheck = false
+		}
+
+		return listDir(dir, trimPrefix, startsWith, startAfter, objectCheck, maxKeys, more, entries)
+	}
+
+	if startAfter == "" {
+		if strings.HasSuffix(prefix, "/") {
+			dir += "/"
+		}
+
+		objectCheck := strings.HasSuffix(prefix, "/")
+		if isPrefixStartAfterSame {
+			objectCheck = false
+		}
+
+		return listRecursive(dir, trimPrefix, startsWith, startAfter, objectCheck, maxKeys, more, entries)
+	}
+
+	ldir := path.Join(dir, path.Dir(startAfter))
+	lStartAfter := ""
+	lStartsWith := ""
+	if startAfter == startsWith {
+		lStartsWith = startsWith
+	}
+
+	if !strings.HasSuffix(startAfter, "/") {
+		lStartAfter = path.Base(startAfter)
+	}
+	startAfter = path.Dir(startAfter)
+
+	for *maxKeys > 0 {
+		if err := listRecursive(ldir, trimPrefix, lStartsWith, lStartAfter, false, maxKeys, more, entries); err != nil {
+			return err
+		}
+
+		ldir = path.Join(dir, path.Dir(startAfter))
+		lStartAfter = path.Base(startAfter) + "/"
+
+		if startAfter == startsWith {
+			lStartsWith = startsWith
+		}
+
+		startAfter = path.Dir(startAfter)
+
+		if ldir == dir && lStartAfter == "./" && startAfter == "." {
+			return nil
+		}
+	}
+
+	return nil
+}
+
+//
+// continuationToken      - ListObjectsV2 - indicates continuing remainings of previous listing.
+// delimiter              - both
+// encodingType           - both
+// fetchOwner             - ListObjectsV2
+// startAfter (== marker) - ListObjectsV2, ListObjectsV1 - indicates to start listing after specified key.
+// maxKeys                - both
+// prefix                 - both
+//
+
+func ListObjects(rootDir, prefix, startAfter string, maxKeys int, isRecursive bool) (isTruncated bool, entries []string, err error) {
+	err = listObjects(rootDir, prefix, startAfter, isRecursive, &maxKeys, &isTruncated, &entries)
+	return
+}

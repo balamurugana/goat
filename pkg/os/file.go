@@ -1,6 +1,7 @@
 package os
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -195,4 +196,30 @@ func RenameFile(oldname, newname string, bitrotProtection bool) error {
 	}
 
 	return os.Rename(oldname, newname)
+}
+
+func WriteJSONFile(filename string, inter interface{}) error {
+	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	return json.NewEncoder(file).Encode(inter)
+}
+
+func ReadJSONFile(filename string, limit int64, inter interface{}) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+
+	defer file.Close()
+
+	if limit > 0 {
+		return json.NewDecoder(io.LimitReader(file, limit)).Decode(inter)
+	}
+
+	return json.NewDecoder(file).Decode(inter)
 }
